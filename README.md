@@ -36,6 +36,8 @@ docker compose logs -f
 | `BOT_TOKEN` | Token del bot de Telegram (obligatorio) | — |
 | `POLL_INTERVAL` | Segundos entre cada comprobación de alertas | `120` |
 | `DATA_DIR` | Directorio donde se guarda la BD SQLite | `/app/data` |
+| `ADMIN_CHAT_ID` | Chat id que recibe aviso si el fetch falla repetidamente | — |
+| `FAILURE_THRESHOLD` | Fallos consecutivos antes de avisar al admin | `3` |
 
 ## Despliegue en producción
 
@@ -71,3 +73,4 @@ alquiler-seguro-fetcher/
 
 - La respuesta de la API trae caracteres de control en las descripciones, por eso se parsea con `json.loads(texto, strict=False)`.
 - El token del bot va en `.env` y nunca se sube al repositorio (está en `.gitignore`).
+- Si el fetch falla `FAILURE_THRESHOLD` veces seguidas, se avisa a `ADMIN_CHAT_ID` y se reinicia el contador (sin spam).

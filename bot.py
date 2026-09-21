@@ -21,9 +21,13 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
+FAILURE_THRESHOLD = int(os.environ.get("FAILURE_THRESHOLD", "3"))
 
 PROVINCIA, PRECIO_MIN, PRECIO_MAX, HABITACIONES, BANYOS = range(5)
 SKIP = "-"
+
+_consecutive_failures = 0
 
 
 def format_config(config: dict) -> str:
@@ -196,6 +200,8 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def check_alerts(context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _consecutive_failures
+    any_error = False
     for cfg in db.all_configs():
         user_id = cfg.pop("user_id")
         chat_id = cfg.pop("chat_id")
@@ -203,6 +209,7 @@ async def check_alerts(context: ContextTypes.DEFAULT_TYPE) -> None:
             properties = fetcher.search(cfg)
         except Exception:
             logger.exception("Error en alerta para user %s", user_id)
+            any_error = True
             continue
 
         new_props = [p for p in properties if not db.has_notified(user_id, p["id"])]
@@ -214,6 +221,21 @@ async def check_alerts(context: ContextTypes.DEFAULT_TYPE) -> None:
                     await context.bot.send_message(chat_id, "Nuevo inmueble:\n\n" + msg)
                 except Exception:
                     logger.exception("Error enviando alerta a %s", chat_id)
+
+    if any_error:
+        _consecutive_failures += 1
+        if _consecutive_failures >= FAILURE_THRESHOLD and ADMIN_CHAT_ID:
+            try:
+                await context.bot.send_message(
+                    ADMIN_CHAT_ID,
+                    f"El fetch de alquilerseguro.es ha fallado {_consecutive_failures} veces "
+                    "seguidas. Revisa los logs del contenedor.",
+                )
+                _consecutive_failures = 0
+            except Exception:
+                logger.exception("Error enviando alerta de fallo al admin")
+    else:
+        _consecutive_failures = 0
 
 
 def main() -> None:
