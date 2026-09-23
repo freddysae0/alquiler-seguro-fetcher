@@ -38,6 +38,7 @@ docker compose logs -f
 | `DATA_DIR` | Directorio donde se guarda la BD SQLite | `/app/data` |
 | `ADMIN_CHAT_ID` | Chat id que recibe aviso si el fetch falla repetidamente | — |
 | `FAILURE_THRESHOLD` | Fallos consecutivos antes de avisar al admin | `3` |
+| `CACHE_TTL` | Segundos de caché de la respuesta de la API (por provincia) | `120` |
 
 ## Despliegue en producción
 
