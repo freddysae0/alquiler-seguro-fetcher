@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -13,6 +14,7 @@ from telegram.ext import (
 
 import db
 import fetcher
+import calls
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -26,6 +28,8 @@ FAILURE_THRESHOLD = int(os.environ.get("FAILURE_THRESHOLD", "3"))
 
 PROVINCIA, PRECIO_MIN, PRECIO_MAX, HABITACIONES, BANYOS = range(5)
 SKIP = "-"
+
+TW_ACCOUNT_SID, TW_AUTH_TOKEN, TW_FROM, TW_TO, TW_ENABLED = range(10, 15)
 
 _consecutive_failures = 0
 
@@ -100,6 +104,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Hola. Comandos disponibles:\n"
         "/config - configura tus filtros de busqueda\n"
         "/get - busca ahora con tus filtros\n"
+        "/twilio - configura Twilio para recibir llamadas\n"
+        "/twilio_status - ver tu configuracion de Twilio\n"
+        "/twilio_on - activar llamadas\n"
+        "/twilio_off - desactivar llamadas\n"
         "Recibiras alertas automaticas cada vez que aparezca un inmueble nuevo que cumpla tus filtros."
     )
 
@@ -199,6 +207,108 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(msg)
 
 
+def _mask(value: str | None) -> str:
+    if not value:
+        return "-"
+    if len(value) <= 4:
+        return "****"
+    return value[:4] + "****" + value[-4:]
+
+
+def format_twilio_status(twilio: dict | None) -> str:
+    if not twilio:
+        return "Twilio no configurado. Usa /twilio para configurarlo."
+    estado = "activadas" if twilio.get("enabled") else "desactivadas"
+    return (
+        "Twilio configurado:\n"
+        f"Account SID: {_mask(twilio.get('account_sid'))}\n"
+        f"Auth Token: {_mask(twilio.get('auth_token'))}\n"
+        f"Desde (from): {twilio.get('from_number') or '-'}\n"
+        f"Hacia (to): {twilio.get('to_number') or '-'}\n"
+        f"Llamadas: {estado}"
+    )
+
+
+async def twilio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    db.upsert_user(
+        update.effective_user.id,
+        update.effective_chat.id,
+        update.effective_user.username,
+        update.message.date.isoformat() if update.message.date else "now",
+    )
+    context.user_data["twilio"] = {}
+    await update.message.reply_text(
+        "Vamos a configurar Twilio. Escribe tu Account SID:"
+    )
+    return TW_ACCOUNT_SID
+
+
+async def twilio_account_sid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["twilio"]["account_sid"] = update.message.text.strip()
+    await update.message.reply_text("Escribe tu Auth Token:")
+    return TW_AUTH_TOKEN
+
+
+async def twilio_auth_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["twilio"]["auth_token"] = update.message.text.strip()
+    await update.message.reply_text(
+        "Numero de Twilio que realiza la llamada (from), ej. +34XXXXXXXXX:"
+    )
+    return TW_FROM
+
+
+async def twilio_from(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["twilio"]["from_number"] = update.message.text.strip()
+    await update.message.reply_text("Numero al que llamar (to), ej. +34XXXXXXXXX:")
+    return TW_TO
+
+
+async def twilio_to(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["twilio"]["to_number"] = update.message.text.strip()
+    await update.message.reply_text("Quieres recibir llamadas? (si/no):")
+    return TW_ENABLED
+
+
+async def twilio_enabled(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip().lower()
+    twilio = context.user_data["twilio"]
+    twilio["enabled"] = text in ("si", "s", "yes", "y", "1", "true")
+
+    db.save_twilio(update.effective_user.id, twilio)
+    await update.message.reply_text("Twilio guardado.\n" + format_twilio_status(twilio))
+    return ConversationHandler.END
+
+
+async def twilio_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Configuracion de Twilio cancelada.")
+    return ConversationHandler.END
+
+
+async def twilio_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    twilio = db.get_twilio(update.effective_user.id)
+    await update.message.reply_text(format_twilio_status(twilio))
+
+
+async def _set_twilio_enabled(update: Update, enabled: bool) -> None:
+    user_id = update.effective_user.id
+    twilio = db.get_twilio(user_id)
+    if not twilio or not all(twilio.get(k) for k in ("account_sid", "auth_token", "from_number", "to_number")):
+        await update.message.reply_text("Primero configura Twilio con /twilio.")
+        return
+    db.set_twilio_enabled(user_id, enabled)
+    await update.message.reply_text(
+        "Llamadas " + ("activadas." if enabled else "desactivadas.")
+    )
+
+
+async def twilio_on_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _set_twilio_enabled(update, True)
+
+
+async def twilio_off_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _set_twilio_enabled(update, False)
+
+
 async def check_alerts(context: ContextTypes.DEFAULT_TYPE) -> None:
     global _consecutive_failures
     any_error = False
@@ -221,6 +331,14 @@ async def check_alerts(context: ContextTypes.DEFAULT_TYPE) -> None:
                     await context.bot.send_message(chat_id, "Nuevo inmueble:\n\n" + msg)
                 except Exception:
                     logger.exception("Error enviando alerta a %s", chat_id)
+
+            twilio = db.get_twilio(user_id)
+            if twilio and twilio.get("enabled"):
+                for prop in new_props:
+                    try:
+                        await asyncio.to_thread(calls.make_call, twilio, prop)
+                    except Exception:
+                        logger.exception("Error llamando a user %s por %s", user_id, prop.get("id"))
 
     if any_error:
         _consecutive_failures += 1
@@ -248,6 +366,9 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("get", get_cmd))
+    application.add_handler(CommandHandler("twilio_status", twilio_status_cmd))
+    application.add_handler(CommandHandler("twilio_on", twilio_on_cmd))
+    application.add_handler(CommandHandler("twilio_off", twilio_off_cmd))
     application.add_handler(
         ConversationHandler(
             entry_points=[CommandHandler("config", config_cmd)],
@@ -259,6 +380,19 @@ def main() -> None:
                 BANYOS: [MessageHandler(filters.TEXT & ~filters.COMMAND, config_banyos)],
             },
             fallbacks=[CommandHandler("cancel", config_cancel)],
+        )
+    )
+    application.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("twilio", twilio_cmd)],
+            states={
+                TW_ACCOUNT_SID: [MessageHandler(filters.TEXT & ~filters.COMMAND, twilio_account_sid)],
+                TW_AUTH_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, twilio_auth_token)],
+                TW_FROM: [MessageHandler(filters.TEXT & ~filters.COMMAND, twilio_from)],
+                TW_TO: [MessageHandler(filters.TEXT & ~filters.COMMAND, twilio_to)],
+                TW_ENABLED: [MessageHandler(filters.TEXT & ~filters.COMMAND, twilio_enabled)],
+            },
+            fallbacks=[CommandHandler("cancel", twilio_cancel)],
         )
     )
 

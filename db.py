@@ -46,6 +46,16 @@ def init_db() -> None:
                 PRIMARY KEY (user_id, inmueble_id),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
+
+            CREATE TABLE IF NOT EXISTS user_twilio (
+                user_id INTEGER PRIMARY KEY,
+                account_sid TEXT,
+                auth_token TEXT,
+                from_number TEXT,
+                to_number TEXT,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
             """
         )
 
@@ -125,3 +135,37 @@ def has_notified(user_id: int, inmueble_id: int) -> bool:
 def reset_notified(user_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM notified WHERE user_id = ?", (user_id,))
+
+
+def save_twilio(user_id: int, twilio: dict) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_twilio (user_id, account_sid, auth_token, from_number, to_number, enabled)
+            VALUES (:user_id, :account_sid, :auth_token, :from_number, :to_number, :enabled)
+            ON CONFLICT(user_id) DO UPDATE SET
+                account_sid = excluded.account_sid,
+                auth_token = excluded.auth_token,
+                from_number = excluded.from_number,
+                to_number = excluded.to_number,
+                enabled = excluded.enabled
+            """,
+            {"user_id": user_id, **twilio},
+        )
+
+
+def get_twilio(user_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT account_sid, auth_token, from_number, to_number, enabled FROM user_twilio WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_twilio_enabled(user_id: int, enabled: bool) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE user_twilio SET enabled = ? WHERE user_id = ?",
+            (1 if enabled else 0, user_id),
+        )

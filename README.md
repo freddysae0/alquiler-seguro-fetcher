@@ -8,6 +8,7 @@ Bot de Telegram que monitoriza los inmuebles en alquiler de [alquilerseguro.es](
 - `/config` — configura tus filtros de forma interactiva: provincia, precio mínimo/máximo, habitaciones y baños (usa `-` para omitir un campo).
 - `/get` — busca ahora con tus filtros y muestra todos los resultados.
 - Alertas automáticas cada `POLL_INTERVAL` segundos (por defecto 120): cuando aparece un inmueble **nuevo** que cumple tus filtros, te envía un mensaje con sus datos y enlace.
+- Llamadas por Twilio (opcional, por usuario): `/twilio` para guardar tus credenciales y número, `/twilio_on` / `/twilio_off` para activar/desactivar las llamadas, `/twilio_status` para ver la configuración. Si las llamadas están activas, al notificar un inmueble nuevo también se realiza una llamada con un mensaje de voz.
 
 ## Cómo funciona
 
@@ -60,9 +61,10 @@ docker compose up -d --build
 
 ```
 alquiler-seguro-fetcher/
-├── bot.py               # handlers, /config, /get, job de alertas
+├── bot.py               # handlers, /config, /get, /twilio, job de alertas
 ├── fetcher.py           # llamada a la API y filtrado client-side
-├── db.py                # SQLite (users, user_config, notified)
+├── calls.py             # llamada de voz por Twilio
+├── db.py                # SQLite (users, user_config, notified, user_twilio)
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -75,3 +77,4 @@ alquiler-seguro-fetcher/
 - La respuesta de la API trae caracteres de control en las descripciones, por eso se parsea con `json.loads(texto, strict=False)`.
 - El token del bot va en `.env` y nunca se sube al repositorio (está en `.gitignore`).
 - Si el fetch falla `FAILURE_THRESHOLD` veces seguidas, se avisa a `ADMIN_CHAT_ID` y se reinicia el contador (sin spam).
+- Las credenciales de Twilio se guardan por usuario en SQLite. El número `from` debe ser un número de Twilio capaz de realizar llamadas de voz.
